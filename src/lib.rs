@@ -41,8 +41,10 @@ use tiles::{
     TileVisible,
 };
 
+#[cfg(feature = "render")]
+use bevy::render::RenderApp;
 #[cfg(all(not(feature = "atlas"), feature = "render"))]
-use bevy::render::{ExtractSchedule, RenderApp};
+use bevy::render::ExtractSchedule;
 
 pub mod anchor;
 /// A module that allows pre-loading of atlases into array textures.
@@ -64,15 +66,17 @@ pub struct TilemapPlugin;
 impl Plugin for TilemapPlugin {
     fn build(&self, app: &mut bevy::prelude::App) {
         #[cfg(feature = "render")]
-        app.add_plugins(render::TilemapRenderingPlugin);
+        if app.get_sub_app(RenderApp).is_some() {
+            app.add_plugins(render::TilemapRenderingPlugin);
+        }
 
         app.add_systems(First, update_changed_tile_positions.in_set(TilemapFirstSet));
 
         #[cfg(all(not(feature = "atlas"), feature = "render"))]
-        {
+        if app.get_sub_app(RenderApp).is_some() {
             app.insert_resource(array_texture_preload::ArrayTextureLoader::default());
-            let render_app = app.sub_app_mut(RenderApp);
-            render_app.add_systems(ExtractSchedule, array_texture_preload::extract);
+            app.sub_app_mut(RenderApp)
+                .add_systems(ExtractSchedule, array_texture_preload::extract);
         }
 
         app.register_type::<FrustumCulling>()
