@@ -267,7 +267,7 @@ fn on_remove_tile(
 /// registers, such as a rollback crate's despawn mark) leaves its chunk as a
 /// removed tile does. Extraction no longer sees it, so nothing else would
 /// take it out.
-fn on_disable_tile(add: On<Add>, mut world: DeferredWorld) {
+fn on_disable_tile(add: On<Add<()>>, mut world: DeferredWorld) {
     let entity = add.event_target();
     if world.get::<TilePos>(entity).is_none() {
         return;
@@ -279,7 +279,7 @@ fn on_disable_tile(add: On<Add>, mut world: DeferredWorld) {
 
 /// A tile that loses one is extracted again, which puts it back in its
 /// chunk.
-fn on_enable_tile(remove: On<Remove>, mut world: DeferredWorld) {
+fn on_enable_tile(remove: On<Remove<()>>, mut world: DeferredWorld) {
     if let Some(mut pos) = world.get_mut::<TilePos>(remove.event_target()) {
         pos.set_changed();
     }
