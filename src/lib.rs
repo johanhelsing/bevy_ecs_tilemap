@@ -41,10 +41,10 @@ use tiles::{
     TileVisible,
 };
 
-#[cfg(feature = "render")]
-use bevy::render::RenderApp;
 #[cfg(all(not(feature = "atlas"), feature = "render"))]
 use bevy::render::ExtractSchedule;
+#[cfg(feature = "render")]
+use bevy::render::RenderApp;
 
 pub mod anchor;
 /// A module that allows pre-loading of atlases into array textures.

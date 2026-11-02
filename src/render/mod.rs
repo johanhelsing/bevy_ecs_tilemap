@@ -3,6 +3,7 @@ use std::marker::PhantomData;
 use bevy::{
     asset::{load_internal_asset, uuid_handle},
     core_pipeline::core_2d::Transparent2d,
+    ecs::{component::ComponentId, entity_disabling::DefaultQueryFilters, world::DeferredWorld},
     image::ImageSamplerDescriptor,
     mesh::MeshVertexAttribute,
     platform::collections::HashSet,
@@ -135,6 +136,17 @@ impl Plugin for TilemapRenderingPlugin {
     }
 
     fn finish(&self, app: &mut App) {
+        // Every disabling component is registered by now, the app's own too.
+        let disabling: Vec<ComponentId> = app
+            .world()
+            .resource::<DefaultQueryFilters>()
+            .disabling_ids()
+            .collect();
+        app.world_mut()
+            .spawn(Observer::new(on_disable_tile).with_components(disabling.clone()));
+        app.world_mut()
+            .spawn(Observer::new(on_enable_tile).with_components(disabling));
+
         let sampler = app.get_added_plugins::<ImagePlugin>().first().map_or_else(
             || ImagePlugin::default_nearest().default_sampler,
             |plugin| plugin.default_sampler.clone(),
@@ -314,6 +326,28 @@ fn on_remove_tile(
 ) {
     if let Ok(render_entity) = query.get(removed.entity) {
         commands.spawn(RemovedTileEntity(*render_entity));
+    }
+}
+
+/// A tile that gains a disabling component (`Disabled`, or one the app
+/// registers, such as a rollback crate's despawn mark) leaves its chunk as a
+/// removed tile does. Extraction no longer sees it, so nothing else would
+/// take it out.
+fn on_disable_tile(add: On<Add>, mut world: DeferredWorld) {
+    let entity = add.event_target();
+    if world.get::<TilePos>(entity).is_none() {
+        return;
+    }
+    if let Some(&render_entity) = world.get::<RenderEntity>(entity) {
+        world.commands().spawn(RemovedTileEntity(render_entity));
+    }
+}
+
+/// A tile that loses one is extracted again, which puts it back in its
+/// chunk.
+fn on_enable_tile(remove: On<Remove>, mut world: DeferredWorld) {
+    if let Some(mut pos) = world.get_mut::<TilePos>(remove.event_target()) {
+        pos.set_changed();
     }
 }
 
