@@ -219,23 +219,30 @@ pub fn extract(
             &TilemapAnchor,
         )>,
     >,
+    // `With<TilemapType>`: an `Or` filter matches every archetype that holds
+    // any one of its components, so without it this walks every entity with
+    // a `GlobalTransform` or an `InheritedVisibility` in the world, tilemap
+    // or not, and looks each moved one up in `tilemap_query`.
     changed_tilemap_query: Extract<
         Query<
             Entity,
-            Or<(
-                Added<TilemapType>,
-                Changed<TilemapType>,
-                Changed<GlobalTransform>,
-                Changed<TilemapTexture>,
-                Changed<TilemapTileSize>,
-                Changed<TilemapSpacing>,
-                Changed<TilemapGridSize>,
-                Changed<TilemapSize>,
-                Changed<InheritedVisibility>,
-                Changed<FrustumCulling>,
-                Changed<TilemapRenderSettings>,
-                Changed<TilemapAnchor>,
-            )>,
+            (
+                With<TilemapType>,
+                Or<(
+                    Added<TilemapType>,
+                    Changed<TilemapType>,
+                    Changed<GlobalTransform>,
+                    Changed<TilemapTexture>,
+                    Changed<TilemapTileSize>,
+                    Changed<TilemapSpacing>,
+                    Changed<TilemapGridSize>,
+                    Changed<TilemapSize>,
+                    Changed<InheritedVisibility>,
+                    Changed<FrustumCulling>,
+                    Changed<TilemapRenderSettings>,
+                    Changed<TilemapAnchor>,
+                )>,
+            ),
         >,
     >,
     camera_query: Extract<Query<(&RenderEntity, &Frustum), With<Camera>>>,
