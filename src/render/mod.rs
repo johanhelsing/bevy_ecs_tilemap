@@ -253,13 +253,11 @@ pub struct RemovedTileEntity(pub RenderEntity);
 #[extract_app(RenderApp)]
 pub struct RemovedMapEntity(pub RenderEntity);
 
-fn on_remove_tile(
-    removed: On<Remove<TilePos>>,
-    mut commands: Commands,
-    query: Query<&RenderEntity>,
-) {
-    if let Ok(render_entity) = query.get(removed.entity) {
-        commands.spawn(RemovedTileEntity(*render_entity));
+/// A tile that goes leaves its chunk. Read from the world, as for a map:
+/// a tile despawned while disabled is skipped by a query.
+fn on_remove_tile(removed: On<Remove<TilePos>>, mut world: DeferredWorld) {
+    if let Some(&render_entity) = world.get::<RenderEntity>(removed.entity) {
+        world.commands().spawn(RemovedTileEntity(render_entity));
     }
 }
 
@@ -285,13 +283,13 @@ fn on_enable_tile(remove: On<Remove<()>>, mut world: DeferredWorld) {
     }
 }
 
-fn on_remove_tilemap(
-    removed: On<Remove<TileStorage>>,
-    mut commands: Commands,
-    query: Query<&RenderEntity>,
-) {
-    if let Ok(render_entity) = query.get(removed.entity) {
-        commands.spawn(RemovedMapEntity(*render_entity));
+/// A map that goes takes its chunks with it. Read from the world, not a
+/// query: a map despawned while disabled (a rollback crate's despawn mark)
+/// is skipped by a query's default filters, and its chunks would stay under
+/// its entity index for the next map that takes the index to draw into.
+fn on_remove_tilemap(removed: On<Remove<TileStorage>>, mut world: DeferredWorld) {
+    if let Some(&render_entity) = world.get::<RenderEntity>(removed.entity) {
+        world.commands().spawn(RemovedMapEntity(render_entity));
     }
 }
 
@@ -353,5 +351,57 @@ pub fn collect_modified_image_asset_messages(
             _ => continue,
         };
         modified_image_ids.0.insert(*id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::ecs::entity_disabling::Disabled;
+
+    use super::*;
+    use crate::map::TilemapSize;
+
+    /// A map despawned while disabled still sends its removal, so its
+    /// chunks go with it.
+    #[test]
+    fn a_map_despawned_while_disabled_takes_its_chunks() {
+        let mut world = World::new();
+        world.add_observer(on_remove_tilemap);
+        let render = world.spawn_empty().id();
+        let map = world
+            .spawn((
+                TileStorage::empty(TilemapSize { x: 1, y: 1 }),
+                RenderEntity::from(render),
+            ))
+            .id();
+        world.entity_mut(map).insert(Disabled);
+        world.entity_mut(map).despawn();
+        world.flush();
+        let removed: Vec<Entity> = world
+            .query::<&RemovedMapEntity>()
+            .iter(&world)
+            .map(|removed| removed.0.id())
+            .collect();
+        assert_eq!(removed, vec![render]);
+    }
+
+    /// A tile despawned while disabled still sends its removal.
+    #[test]
+    fn a_tile_despawned_while_disabled_leaves_its_chunk() {
+        let mut world = World::new();
+        world.add_observer(on_remove_tile);
+        let render = world.spawn_empty().id();
+        let tile = world
+            .spawn((TilePos::new(0, 0), RenderEntity::from(render)))
+            .id();
+        world.entity_mut(tile).insert(Disabled);
+        world.entity_mut(tile).despawn();
+        world.flush();
+        let removed: Vec<Entity> = world
+            .query::<&RemovedTileEntity>()
+            .iter(&world)
+            .map(|removed| removed.0.id())
+            .collect();
+        assert_eq!(removed, vec![render]);
     }
 }
