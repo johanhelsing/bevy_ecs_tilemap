@@ -9,8 +9,7 @@ use bevy::{
     platform::collections::HashSet,
     prelude::*,
     render::{
-        Render, RenderApp, RenderSystems,
-        extract_component::{ExtractComponent, ExtractComponentPlugin},
+        MainWorld, Render, RenderApp, RenderSystems,
         extract_resource::{ExtractResource, extract_resource},
         render_phase::AddRenderCommand,
         render_resource::{FilterMode, SpecializedRenderPipelines, VertexFormat},
@@ -25,10 +24,7 @@ use bevy::render::renderer::RenderDevice;
 use bevy::render::texture::GpuImage;
 use extract::remove_changed;
 
-use crate::{
-    TilemapFirstSet,
-    tiles::{TilePos, TileStorage},
-};
+use crate::tiles::{TilePos, TileStorage};
 use crate::{
     prelude::TilemapTexture,
     render::{
@@ -112,13 +108,9 @@ impl Plugin for TilemapRenderingPlugin {
         #[cfg(not(feature = "atlas"))]
         app.add_systems(Update, set_texture_to_copy_src);
 
-        app.add_systems(First, clear_removed.in_set(TilemapFirstSet));
-
+        app.init_resource::<RemovedEntities>();
         app.add_observer(on_remove_tile);
         app.add_observer(on_remove_tilemap);
-
-        app.add_plugins(ExtractComponentPlugin::<RemovedTileEntity>::default());
-        app.add_plugins(ExtractComponentPlugin::<RemovedMapEntity>::default());
 
         app.add_plugins(MaterialTilemapPlugin::<StandardTilemapMaterial>::default());
 
@@ -186,9 +178,11 @@ impl Plugin for TilemapRenderingPlugin {
         render_app
             .insert_resource(DefaultSampler(sampler))
             .insert_resource(RenderChunk2dStorage::default())
+            .init_resource::<RemovedEntities>()
             .add_systems(
                 ExtractSchedule,
                 (
+                    extract_removed,
                     extract::extract,
                     extract_resource::<ModifiedImageIds, RenderApp, ()>,
                 ),
@@ -245,19 +239,29 @@ pub const ATTRIBUTE_TEXTURE: MeshVertexAttribute =
 pub const ATTRIBUTE_COLOR: MeshVertexAttribute =
     MeshVertexAttribute::new("Color", 231497124, VertexFormat::Float32x4);
 
-#[derive(Component, ExtractComponent, Clone)]
-#[extract_app(RenderApp)]
-pub struct RemovedTileEntity(pub RenderEntity);
-
-#[derive(Component, ExtractComponent, Clone)]
-#[extract_app(RenderApp)]
-pub struct RemovedMapEntity(pub RenderEntity);
+/// The render entities of the tiles and maps that went since the last
+/// extraction, for the render world to take out of its chunks.
+///
+/// A resource the extraction drains, not an entity per removal cleared in a
+/// main-world schedule: a removal made in that schedule before the clear
+/// (an app's own system in `First`, before `TilemapFirstSet`) was cleared
+/// before any extraction saw it. Its map's chunks stayed under its entity
+/// index, and the next map to take the index drew into chunks that still
+/// named the dead map, which draws nothing.
+#[derive(Resource, Default)]
+pub(crate) struct RemovedEntities {
+    pub(crate) tiles: Vec<Entity>,
+    pub(crate) maps: Vec<Entity>,
+}
 
 /// A tile that goes leaves its chunk. Read from the world, as for a map:
 /// a tile despawned while disabled is skipped by a query.
 fn on_remove_tile(removed: On<Remove<TilePos>>, mut world: DeferredWorld) {
     if let Some(&render_entity) = world.get::<RenderEntity>(removed.entity) {
-        world.commands().spawn(RemovedTileEntity(render_entity));
+        world
+            .resource_mut::<RemovedEntities>()
+            .tiles
+            .push(render_entity.id());
     }
 }
 
@@ -271,7 +275,10 @@ fn on_disable_tile(add: On<Add<()>>, mut world: DeferredWorld) {
         return;
     }
     if let Some(&render_entity) = world.get::<RenderEntity>(entity) {
-        world.commands().spawn(RemovedTileEntity(render_entity));
+        world
+            .resource_mut::<RemovedEntities>()
+            .tiles
+            .push(render_entity.id());
     }
 }
 
@@ -289,22 +296,19 @@ fn on_enable_tile(remove: On<Remove<()>>, mut world: DeferredWorld) {
 /// its entity index for the next map that takes the index to draw into.
 fn on_remove_tilemap(removed: On<Remove<TileStorage>>, mut world: DeferredWorld) {
     if let Some(&render_entity) = world.get::<RenderEntity>(removed.entity) {
-        world.commands().spawn(RemovedMapEntity(render_entity));
+        world
+            .resource_mut::<RemovedEntities>()
+            .maps
+            .push(render_entity.id());
     }
 }
 
-fn clear_removed(
-    mut commands: Commands,
-    removed_query: Query<Entity, With<RemovedTileEntity>>,
-    removed_map_query: Query<Entity, With<RemovedMapEntity>>,
-) {
-    for entity in removed_query.iter() {
-        commands.entity(entity).despawn();
-    }
-
-    for entity in removed_map_query.iter() {
-        commands.entity(entity).despawn();
-    }
+/// Moves the removals made since the last extraction to the render world,
+/// each one exactly once, whenever in the frame it was made.
+fn extract_removed(mut main_world: ResMut<MainWorld>, mut removed: ResMut<RemovedEntities>) {
+    let mut main = main_world.resource_mut::<RemovedEntities>();
+    removed.tiles.append(&mut main.tiles);
+    removed.maps.append(&mut main.maps);
 }
 
 #[cfg(not(feature = "atlas"))]
@@ -361,12 +365,29 @@ mod tests {
     use super::*;
     use crate::map::TilemapSize;
 
+    fn main_world() -> World {
+        let mut world = World::new();
+        world.init_resource::<RemovedEntities>();
+        world.add_observer(on_remove_tilemap);
+        world.add_observer(on_remove_tile);
+        world
+    }
+
+    /// Runs the extraction of removals over `main`, as the render app does
+    /// once a frame, and returns what the render world was given.
+    fn extract(main: World, render: &mut World) -> World {
+        let mut main_world = MainWorld::default();
+        *main_world = main;
+        render.insert_resource(main_world);
+        render.run_system_cached(extract_removed).unwrap();
+        std::mem::take(&mut *render.remove_resource::<MainWorld>().unwrap())
+    }
+
     /// A map despawned while disabled still sends its removal, so its
     /// chunks go with it.
     #[test]
     fn a_map_despawned_while_disabled_takes_its_chunks() {
-        let mut world = World::new();
-        world.add_observer(on_remove_tilemap);
+        let mut world = main_world();
         let render = world.spawn_empty().id();
         let map = world
             .spawn((
@@ -376,32 +397,44 @@ mod tests {
             .id();
         world.entity_mut(map).insert(Disabled);
         world.entity_mut(map).despawn();
-        world.flush();
-        let removed: Vec<Entity> = world
-            .query::<&RemovedMapEntity>()
-            .iter(&world)
-            .map(|removed| removed.0.id())
-            .collect();
-        assert_eq!(removed, vec![render]);
+        assert_eq!(world.resource::<RemovedEntities>().maps, vec![render]);
     }
 
     /// A tile despawned while disabled still sends its removal.
     #[test]
     fn a_tile_despawned_while_disabled_leaves_its_chunk() {
-        let mut world = World::new();
-        world.add_observer(on_remove_tile);
+        let mut world = main_world();
         let render = world.spawn_empty().id();
         let tile = world
             .spawn((TilePos::new(0, 0), RenderEntity::from(render)))
             .id();
         world.entity_mut(tile).insert(Disabled);
         world.entity_mut(tile).despawn();
-        world.flush();
-        let removed: Vec<Entity> = world
-            .query::<&RemovedTileEntity>()
-            .iter(&world)
-            .map(|removed| removed.0.id())
-            .collect();
-        assert_eq!(removed, vec![render]);
+        assert_eq!(world.resource::<RemovedEntities>().tiles, vec![render]);
+    }
+
+    /// A removal waits in the main world until an extraction takes it,
+    /// whatever the main schedule runs in between, and reaches the render
+    /// world once. A map despawned in `First` before this crate's own
+    /// systems there once lost its removal to a clear that ran before any
+    /// extraction.
+    #[test]
+    fn a_removal_reaches_the_render_world_once() {
+        let mut main = main_world();
+        let mut render = World::new();
+        render.init_resource::<RemovedEntities>();
+        let render_map = render.spawn_empty().id();
+        let map = main
+            .spawn((
+                TileStorage::empty(TilemapSize { x: 1, y: 1 }),
+                RenderEntity::from(render_map),
+            ))
+            .id();
+        main.despawn(map);
+        let main = extract(main, &mut render);
+        assert_eq!(render.resource::<RemovedEntities>().maps, vec![render_map]);
+        render.resource_mut::<RemovedEntities>().maps.clear();
+        extract(main, &mut render);
+        assert!(render.resource::<RemovedEntities>().maps.is_empty());
     }
 }
