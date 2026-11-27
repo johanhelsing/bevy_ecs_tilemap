@@ -413,11 +413,44 @@ mod tests {
         assert_eq!(world.resource::<RemovedEntities>().tiles, vec![render]);
     }
 
-    /// A removal waits in the main world until an extraction takes it,
-    /// whatever the main schedule runs in between, and reaches the render
-    /// world once. A map despawned in `First` before this crate's own
-    /// systems there once lost its removal to a clear that ran before any
-    /// extraction.
+    /// A map despawned in `First`, before this crate's own systems there,
+    /// keeps its removal through the rest of the frame, for the extraction
+    /// that follows. A clear in `First` once took it before any extraction
+    /// saw it (an editor's load runs there), and the map's chunks stayed.
+    #[test]
+    fn a_map_despawned_early_in_the_frame_keeps_its_removal() {
+        #[derive(Resource)]
+        struct Doomed(Entity);
+
+        let mut app = App::new();
+        app.add_plugins((MinimalPlugins, AssetPlugin::default()));
+        app.init_asset::<bevy::shader::Shader>()
+            .init_asset::<Image>();
+        // The rendering half is added only beside a render app; an empty
+        // one is enough for its main-world part.
+        app.insert_sub_app(RenderApp, bevy::app::SubApp::new());
+        app.add_plugins(crate::TilemapPlugin);
+        app.add_systems(
+            First,
+            (|mut commands: Commands, doomed: Res<Doomed>| {
+                commands.entity(doomed.0).despawn();
+            })
+            .before(crate::TilemapFirstSet),
+        );
+        let render = app.world_mut().spawn_empty().id();
+        let map = app
+            .world_mut()
+            .spawn((
+                TileStorage::empty(TilemapSize { x: 1, y: 1 }),
+                RenderEntity::from(render),
+            ))
+            .id();
+        app.insert_resource(Doomed(map));
+        app.update();
+        assert_eq!(app.world().resource::<RemovedEntities>().maps, vec![render]);
+    }
+
+    /// An extraction hands each removal to the render world once.
     #[test]
     fn a_removal_reaches_the_render_world_once() {
         let mut main = main_world();
